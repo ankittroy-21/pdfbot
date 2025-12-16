@@ -2,7 +2,7 @@
 .env
 
 # Configuration files containing sensitive data
-
+config.py
 
 # Virtual environments
 venv/

@@ -9,7 +9,8 @@ app = Client(
     "pdf_bot",
     api_id=API_ID,
     api_hash=API_HASH,
-    bot_token=BOT_TOKEN
+    bot_token=BOT_TOKEN,
+    sleep_threshold=10  # Reduce sleep threshold to handle API calls more efficiently
 )
 
 # Register handlers

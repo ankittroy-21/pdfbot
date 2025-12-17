@@ -25,7 +25,7 @@ pip install -r requirements.txt
 
 3. Set up your credentials in `.env` file:
 
-Create a `.env` file in the root directory with the following content:
+Create a `.env` file in the root directory with your credentials. You can use `.env.example` as a template:
 ```
 API_ID=your_api_id
 API_HASH=your_api_hash

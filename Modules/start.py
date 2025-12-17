@@ -35,11 +35,11 @@ async def help_command(client: Client, message: Message):
         "📋 **Available Commands**\n\n"
         "🔹 `/start` - Display welcome message\n"
         "🔹 `/help` - Show this help message\n"
-        "🔹 `/pdf [filename]` - Reply to an image to convert it to PDF\n\n"
+        "🔹 `/pdf`[filename] - Reply to an image to convert it to PDF\n\n"
         "**How to use:**\n"
         "1. Send an image to the bot\n"
         "2. Reply to that image with `/pdf` to convert with unique default name\n"
-        "3. Or use `/pdf filename` to specify a custom name for the PDF"
+        "3. Or use `/pdf`[filename] to specify a custom name for the PDF"
     )
     await message.reply_text(help_text)
 

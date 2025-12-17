@@ -32,6 +32,8 @@ API_HASH=your_api_hash
 BOT_TOKEN=your_bot_token
 ```
 
+**Note**: If you encounter a "SESSION_REVOKED" error, delete the `.session` file in the project directory and restart the bot.
+
 ## Usage
 
 Run the bot:

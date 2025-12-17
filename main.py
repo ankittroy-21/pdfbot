@@ -18,4 +18,15 @@ register(app)
  
 if __name__ == "__main__":
     print("🤖 Bot has started!")
-    app.run()
+    try:
+        app.run()
+    except Exception as e:
+        print(f"❌ Error occurred: {e}")
+        print("\nIf you're seeing a SESSION_REVOKED error:")
+        print("1. Check if you've terminated all other Telegram sessions from @BotFather")
+        print("2. Delete the pdf_bot.session file in this directory")
+        print("3. Restart the bot")
+        print("\nIf you're seeing a CONNECTION_FAILED error:")
+        print("1. Check your internet connection")
+        print("2. Make sure your API credentials are correct")
+        print("3. Verify that your bot token is valid")

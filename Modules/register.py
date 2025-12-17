@@ -6,6 +6,7 @@ from pyrogram.handlers.callback_query_handler import CallbackQueryHandler
 from .start_cmd import start_command, help_command
 from .pdf_cmd import pdf_command_handler, handle_convert_callback
 from .compress_cmd import compress_command_handler, handle_compression_callback
+from .multipdf_cmd import multipdf_command_handler, done_command_handler, cancel_command_handler, collect_image_handler
 
 def register(app):
     """Register all handlers with the application"""
@@ -16,6 +17,11 @@ def register(app):
     # Register PDF conversion commands
     app.add_handler(MessageHandler(pdf_command_handler, filters.command("pdf")))
     
+    # Register multi-image PDF commands
+    app.add_handler(MessageHandler(multipdf_command_handler, filters.command("multipdf")))
+    app.add_handler(MessageHandler(done_command_handler, filters.command("done")))
+    app.add_handler(MessageHandler(cancel_command_handler, filters.command("cancel")))
+    
     # Register PDF compression command
     app.add_handler(MessageHandler(compress_command_handler, filters.command("compress")))
     
@@ -25,4 +31,5 @@ def register(app):
     # Register conversion callback handler for cancel buttons
     app.add_handler(CallbackQueryHandler(handle_convert_callback, filters.regex(r"^cancel_convert_")))
     
-    # Note: Auto-conversion removed - users must use /pdf command
+    # Register direct image handler (auto-conversion) and image collection for multipdf
+    app.add_handler(MessageHandler(collect_image_handler, filters.photo))

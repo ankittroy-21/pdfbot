@@ -51,6 +51,24 @@ async def handle_convert_callback(client: Client, callback_query: CallbackQuery)
             except:
                 pass
 
+# For backward compatibility - direct image handling is now managed in multipdf_cmd.py
+# This function can be left empty or with a simple implementation if needed elsewhere
 async def image_handler(client: Client, message: Message):
-    """Handle direct image messages (automatic conversion)"""
-    await convert_image_to_pdf(client, message, message)
+    """Handle direct image messages (for compatibility)"""
+    # This function is now primarily handled in multipdf_cmd.py for collection purposes
+    # If an image is sent directly without being in a collection process, 
+    # we can notify the user about the multipdf feature
+    user_id = message.from_user.id
+    # Check if user is in the middle of a multipdf collection process
+    from .multipdf_cmd import collected_images_store
+    if user_id in collected_images_store and f"{user_id}_filename" in collected_images_store:
+        # If in collection process, add to collection (this is handled by the multipdf handler)
+        pass
+    else:
+        # If not in collection process, inform about the feature
+        await message.reply_text(
+            "📸 **New Feature Available!**\n\n"
+            "Send images directly to collect them for a multi-image PDF.\n"
+            "Then use `/multipdf` to start the collection process,\n"
+            "`/done` to create the PDF, or `/cancel` to cancel."
+        )

@@ -23,12 +23,13 @@ A Telegram bot that converts images to PDF files instantly.
 pip install -r requirements.txt
 ```
 
-3. Set up your credentials in `config.py`:
+3. Set up your credentials in `.env` file:
 
-```python
-API_ID = "your_api_id"
-API_HASH = "your_api_hash"
-BOT_TOKEN = "your_bot_token"
+Create a `.env` file in the root directory with the following content:
+```
+API_ID=your_api_id
+API_HASH=your_api_hash
+BOT_TOKEN=your_bot_token
 ```
 
 ## Usage
@@ -42,14 +43,15 @@ python main.py
 ## Commands
 
 - `/start` - Start the bot and get a welcome message
-- `/pdf [filename]` - Reply to an image with this command to convert it to PDF. If no filename is provided, it will use "Pdfio.pdf" as default.
+- `/help` - Show available commands and usage instructions
+- `/pdf [filename]` - Reply to an image with this command to convert it to PDF. If no filename is provided, it will use a unique filename based on user ID and timestamp.
 
 ## How it Works
 
 1. User sends an image to the bot
 2. User replies to the image with `/pdf` command (with optional filename)
 3. Bot downloads the image
-4. Bot converts the image to a PDF with the specified filename
+4. Bot converts the image to a PDF with the specified or unique filename
 5. Bot sends the PDF back to the user
 6. Bot deletes temporary files
 
@@ -57,6 +59,12 @@ python main.py
 
 - [Pyrogram](https://docs.pyrogram.org/) - Telegram MTProto API Framework
 - [Pillow](https://pillow.readthedocs.io/en/stable/) - Python Imaging Library
+- [PyMuPDF](https://pymupdf.readthedocs.io/en/latest/) - PDF manipulation library
+- [python-dotenv](https://pypi.org/project/python-dotenv/) - Environment variable management
+
+## Security
+
+The bot uses environment variables to store sensitive credentials, which are automatically ignored by git through the `.gitignore` file.
 
 ## License
 

@@ -15,7 +15,7 @@ app = Client(
 
 # Register handlers
 register(app)
-
+ 
 if __name__ == "__main__":
-    print("Bot is starting...")
+    print("🤖 Bot has started!")
     app.run()

@@ -1,10 +1,109 @@
 """Core functionality shared across commands"""
 
-from PIL import Image
+from PIL import Image, ImageCms
 from io import BytesIO
 import os
 import asyncio
 import fitz  # PyMuPDF
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+# Active tasks dictionary to track conversions
+active_tasks = {}
+
+class ColorNormalizer:
+    """
+    A robust engine for converting images to standardized sRGB color space
+    to prevent 'dull' or 'washed out' colors in PDF generation.
+    """
+    
+    def __init__(self):
+        # Create the sRGB profile using Pillow's built-in profile
+        self.srgb_profile = ImageCms.createProfile('sRGB')
+        
+        # Get the profile bytes for embedding
+        profile_buffer = BytesIO()
+        # Save profile to buffer to get bytes
+        try:
+            # For newer Pillow versions, we can get bytes directly
+            if hasattr(self.srgb_profile, 'tobytes'):
+                self.srgb_profile_bytes = self.srgb_profile.tobytes()
+            else:
+                # Fallback: create a temporary image with the profile and extract it
+                temp_img = Image.new('RGB', (1, 1))
+                temp_img.info['icc_profile'] = None
+                # Build profile bytes manually by transforming a test image
+                # Actually, for sRGB we can use None and let the system handle it
+                self.srgb_profile_bytes = None
+        except:
+            self.srgb_profile_bytes = None
+    
+    def normalize(self, img):
+        """
+        Converts image to sRGB color space with proper ICC profile handling.
+        Uses perceptual rendering intent to preserve visual appearance.
+        
+        Args:
+            img: PIL Image object
+            
+        Returns:
+            Tuple of (PIL Image in sRGB color space, sRGB profile bytes or None)
+        """
+        if img is None:
+            return None, None
+            
+        try:
+            # Handle images with ICC profiles
+            if "icc_profile" in img.info:
+                src_profile_data = img.info["icc_profile"]
+                
+                try:
+                    # Create profile object from embedded ICC data
+                    src_profile_buffer = BytesIO(src_profile_data)
+                    input_profile = ImageCms.ImageCmsProfile(src_profile_buffer)
+                    
+                    # Transform to sRGB using Perceptual Intent (0)
+                    # Perceptual intent preserves visual relationships when converting
+                    # from wide-gamut (Adobe RGB) to smaller gamut (sRGB)
+                    # This prevents the "washed out" appearance
+                    img = ImageCms.profileToProfile(
+                        img,
+                        input_profile,
+                        self.srgb_profile,
+                        renderingIntent=ImageCms.Intent.PERCEPTUAL,
+                        outputMode='RGB'
+                    )
+                    
+                    # After transformation, the image is in sRGB
+                    # We can extract the sRGB profile from the transformed image
+                    # or use the original sRGB profile bytes if available
+                    return img, self.srgb_profile_bytes
+                    
+                except Exception as e:
+                    print(f"⚠️ ICC profile transform failed: {e}. _bytesdard conversion.")
+                    # Fallback to standard conversion
+                    if img and img.mode != 'RGB':
+                        img = img.convert('RGB')
+                    return img if img else None, self.srgb_profile.tobytes() if img else None
+            else:
+                # No ICC profile present - convert mode if needed
+                if img.mode == 'CMYK':
+                    # CMYK without profile needs careful handling
+                    # Use standard RGB conversion as fallback
+                    print("⚠️ CMYK image without ICC profile - converting to RGB")
+                    img = img.convert('RGB')
+                elif img.mode not in ('RGB', 'L'):
+                    # Handle RGBA, LA, P modes
+                    if img.mode in ('RGBA', 'LA', 'P'):
+                        img = img.convert('RGB')
+                
+                return img, self.srgb_profile_bytes
+                
+        except Exception as e:
+            print(f"⚠️ Color normalization error: {e}")
+            # Emergency fallback
+            if img and img.mode != 'RGB':
+                img = img.convert('RGB')
+            return img if img else None, None
 
 def create_progress_bar(percentage):
     """Create a progress bar with the given percentage"""
@@ -13,11 +112,18 @@ def create_progress_bar(percentage):
     bar = "⬢" * filled_blocks + "⬡" * empty_blocks
     return f"[{bar}] {percentage}%"
 
-async def convert_image_to_pdf(client, image_message, reply_message, pdf_filename=None):
+async def convert_image_to_pdf(client, image_message, reply_message, pdf_filename=None, task_id=None):
     """Common function to convert image to PDF with compression"""
     downloaded_path = None
     pdf_path = None
     progress_msg = None
+    
+    # Generate task ID if not provided
+    if not task_id:
+        task_id = f"convert_{image_message.id}"
+    
+    # Register task for cancellation
+    active_tasks[task_id] = {'cancelled': False, 'progress': 0}
     
     try:
         # Get the photo
@@ -29,38 +135,89 @@ async def convert_image_to_pdf(client, image_message, reply_message, pdf_filenam
         if not pdf_filename:
             pdf_filename = "Pdfio.pdf"
         
-        # Send initial progress message
-        progress_msg = await reply_message.reply_text(f"{create_progress_bar(0)}\n\nStatus: Downloading image...")
+        # Create cancel button
+        cancel_keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_convert_{task_id}")]
+        ])
+        
+        # Send initial progress message with cancel button
+        progress_msg = await reply_message.reply_text(
+            f"{create_progress_bar(0)}\n\nStatus: Downloading image...",
+            reply_markup=cancel_keyboard
+        )
+        
+        # Check for cancellation before download
+        if task_id in active_tasks and active_tasks[task_id].get('cancelled', False):
+            await progress_msg.edit_text("❌ Conversion cancelled by user.")
+            return
         
         # Download the photo with timeout handling
         downloaded_result = await client.download_media(file_id, file_name=f"temp_{file_id}.jpg")
+        
+        # Check for cancellation after download
+        if task_id in active_tasks and active_tasks[task_id].get('cancelled', False):
+            if downloaded_result and isinstance(downloaded_result, str) and os.path.exists(downloaded_result):
+                os.remove(downloaded_result)
+            await progress_msg.edit_text("❌ Conversion cancelled by user.")
+            return
         
         # Make sure download was successful and it's a string path
         if downloaded_result and isinstance(downloaded_result, str):
             downloaded_path = downloaded_result
             # Update progress to converting
-            await progress_msg.edit_text(f"{create_progress_bar(30)}\n\nStatus: Converting to PDF...")
+            await progress_msg.edit_text(
+                f"{create_progress_bar(30)}\n\nStatus: Converting to PDF...",
+                reply_markup=cancel_keyboard
+            )
             
-            # Convert image to PDF with advanced optimization
+            # Check for cancellation before conversion
+            if task_id in active_tasks and active_tasks[task_id].get('cancelled', False):
+                os.remove(downloaded_path)
+                await progress_msg.edit_text("❌ Conversion cancelled by user.")
+                return
+            
+            # Convert image to PDF with color-aware optimization
             img = Image.open(downloaded_path)
             
-            # Optimize the image before creating PDF
-            if img.mode in ('RGBA', 'LA', 'P'):
-                # Convert to RGB if the image has transparency
-                img = img.convert('RGB')
+            # Initialize color normalizer
+            normalizer = ColorNormalizer()
             
-            # Do NOT resize initially - we'll handle it in PDF compression
+            # Normalize image to sRGB color space with proper ICC profile handling
+            # This prevents "dull" or "washed out" colors
+            img, srgb_profile_bytes = normalizer.normalize(img)
+            
+            # Check if normalization failed
+            if img is None:
+                await progress_msg.edit_text("❌ Failed to process image.")
+                if downloaded_path and os.path.exists(downloaded_path):
+                    os.remove(downloaded_path)
+                if task_id in active_tasks:
+                    del active_tasks[task_id]
+                return
+            
+            # Update progress
+            await progress_msg.edit_text(
+                f"{create_progress_bar(50)}\n\nStatus: Optimizing colors...",
+                reply_markup=cancel_keyboard
+            )
+            
+            # Check for cancellation
+            if task_id in active_tasks and active_tasks[task_id].get('cancelled', False):
+                os.remove(downloaded_path)
+                await progress_msg.edit_text("❌ Conversion cancelled by user.")
+                return
             
             # Create PDF using optimized settings
             pdf_path = pdf_filename  # Use the provided filename
             
-            # Use PyMuPDF for maximum compression with aggressive optimization
+            # Use PyMuPDF for PDF creation with color preservation
             if fitz is not None:
-                # First, aggressively compress the source image before PDF conversion
+                # Prepare optimized JPEG with color profile
                 temp_img_path = f"temp_{file_id}_for_pdf.jpg"
                 
-                # Calculate target dimensions (reduce to max 1200px on longest side for compression)
-                max_dimension = 1200
+                # Aggressive optimization for smaller file size while maintaining quality
+                # Balance between quality and compression as per research
+                max_dimension = 2000  # Reduced resolution for smaller files
                 width, height = img.size
                 if width > max_dimension or height > max_dimension:
                     if width > height:
@@ -71,8 +228,27 @@ async def convert_image_to_pdf(client, image_message, reply_message, pdf_filenam
                         new_width = int(width * (max_dimension / height))
                     img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
                 
-                # Save with aggressive JPEG compression (quality=25 for ~80KB target)
-                img.save(temp_img_path, "JPEG", quality=25, optimize=True, progressive=True)
+                # Save with optimized settings - aggressive compression
+                save_kwargs = {
+                    'format': 'JPEG',
+                    'quality': 75,           # Good quality, better compression
+                    'optimize': True,        # Optimize Huffman tables
+                    'progressive': True,     # Progressive JPEG
+                    'subsampling': '4:2:0'   # Standard chroma subsampling (smaller files)
+                }
+                
+                # Embed sRGB profile if available
+                if srgb_profile_bytes:
+                    save_kwargs['icc_profile'] = srgb_profile_bytes
+                
+                img.save(temp_img_path, **save_kwargs)
+                
+                # Check for cancellation before creating PDF
+                if task_id in active_tasks and active_tasks[task_id].get('cancelled', False):
+                    os.remove(downloaded_path)
+                    os.remove(temp_img_path)
+                    await progress_msg.edit_text("❌ Conversion cancelled by user.")
+                    return
                 
                 # Create a new PDF document using PyMuPDF for better compression
                 doc = fitz.open()
@@ -96,52 +272,15 @@ async def convert_image_to_pdf(client, image_message, reply_message, pdf_filenam
                 # Remove the temporary image file
                 os.remove(temp_img_path)
                 
-                # Apply aggressive post-processing compression
-                try:
-                    await asyncio.sleep(0.1)
-                    
-                    # Use Ghostscript-style compression via PyMuPDF
-                    final_doc = fitz.open(pdf_path)
-                    
-                    # Create a new document for recompressed output
-                    compressed_doc = fitz.open()
-                    
-                    for page_num in range(len(final_doc)):
-                        page = final_doc[page_num]
-                        
-                        # Get page as pixmap with reduced DPI (72 DPI for screen quality)
-                        mat = fitz.Matrix(0.5, 0.5)  # Scale down to 50% for more compression
-                        pix = page.get_pixmap(matrix=mat, alpha=False)
-                        
-                        # Convert pixmap to JPEG bytes with low quality
-                        img_bytes = pix.tobytes("jpeg", jpg_quality=20)
-                        
-                        # Create new page in compressed doc
-                        new_page = compressed_doc.new_page(width=page.rect.width, height=page.rect.height)
-                        
-                        # Insert the compressed image
-                        new_page.insert_image(new_page.rect, stream=img_bytes)
-                    
-                    final_doc.close()
-                    
-                    # Save the heavily compressed version
-                    compressed_doc.save(pdf_path,
-                                       garbage=4,
-                                       deflate=True,
-                                       clean=True,
-                                       pretty=False)
-                    compressed_doc.close()
-                    
-                    del final_doc, compressed_doc
-                    await asyncio.sleep(0.1)
-                    
-                except Exception as e:
-                    # If advanced compression fails, keep the basic compressed version
-                    pass
+                # Update progress - conversion complete
+                await progress_msg.edit_text(
+                    f"{create_progress_bar(90)}\n\nStatus: Finalizing...",
+                    reply_markup=cancel_keyboard
+                )
             else:
-                # Fallback to PIL with aggressive compression
-                # Resize for compression
-                max_dimension = 1200
+                # Fallback to PIL with optimized settings
+                # Aggressive optimization for smaller file size
+                max_dimension = 2000
                 width, height = img.size
                 if width > max_dimension or height > max_dimension:
                     if width > height:
@@ -152,14 +291,34 @@ async def convert_image_to_pdf(client, image_message, reply_message, pdf_filenam
                         new_width = int(width * (max_dimension / height))
                     img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
                 
-                img.save(pdf_path, "PDF",
-                         resolution=72.0,           # Screen resolution for smaller size
-                         save_all=True,
-                         optimize=True,
-                         quality=30)                # Low quality for aggressive compression
+                # Save as PDF with aggressive compression settings
+                save_kwargs = {
+                    'format': 'PDF',
+                    'resolution': 100.0,     # Lower resolution for smaller files
+                    'save_all': True,
+                    'optimize': True,
+                    'quality': 75            # Aggressive compression
+                }
+                
+                # Embed sRGB profile if available
+                if srgb_profile_bytes:
+                    save_kwargs['icc_profile'] = srgb_profile_bytes
+                
+                img.save(pdf_path, **save_kwargs)
             
             # Update progress to uploading
-            await progress_msg.edit_text(f"{create_progress_bar(70)}\n\nStatus: Uploading PDF...")
+            await progress_msg.edit_text(
+                f"{create_progress_bar(90)}\n\nStatus: Uploading PDF...",
+                reply_markup=cancel_keyboard
+            )
+            
+            # Final cancellation check before upload
+            if task_id in active_tasks and active_tasks[task_id].get('cancelled', False):
+                os.remove(downloaded_path)
+                if os.path.exists(pdf_path):
+                    os.remove(pdf_path)
+                await progress_msg.edit_text("❌ Conversion cancelled by user.")
+                return
             
             # Send the PDF back to the user
             await reply_message.reply_document(pdf_path, caption=f"Here's your PDF: {pdf_filename}")
@@ -189,6 +348,10 @@ async def convert_image_to_pdf(client, image_message, reply_message, pdf_filenam
             # Delete the progress message
             await progress_msg.delete()
             
+            # Clean up task from active tasks
+            if task_id in active_tasks:
+                del active_tasks[task_id]
+            
         else:
             await reply_message.reply_text("Failed to download the image.")
             if progress_msg:
@@ -204,6 +367,9 @@ async def convert_image_to_pdf(client, image_message, reply_message, pdf_filenam
                 await progress_msg.delete()
             except:
                 pass
+        # Clean up task
+        if task_id in active_tasks:
+            del active_tasks[task_id]
     except Exception as e:
         await reply_message.reply_text(f"An error occurred: {str(e)}")
         if progress_msg:
@@ -211,6 +377,9 @@ async def convert_image_to_pdf(client, image_message, reply_message, pdf_filenam
                 await progress_msg.delete()
             except:
                 pass
+        # Clean up task
+        if task_id in active_tasks:
+            del active_tasks[task_id]
         # Clean up any temporary files if they exist
         try:
             if downloaded_path and isinstance(downloaded_path, str) and os.path.exists(downloaded_path):

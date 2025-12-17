@@ -33,21 +33,26 @@ def create_progress_bar(percentage):
 
 def estimate_compressed_size(original_size, power):
     """Estimate compressed file size based on power level"""
-    # More accurate compression ratios based on testing
+    # Realistic compression ratios with image re-encoding
     ratios = {
-        2: 0.40,  # Printer: ~60% reduction
-        3: 0.25,  # eBook: ~75% reduction
-        4: 0.15   # Screen: ~85% reduction (more conservative)
+        2: 0.50,  # Printer: ~50% reduction (high quality)
+        3: 0.35,  # eBook: ~65% reduction (balanced)
+        4: 0.25   # Screen: ~75% reduction (aggressive)
     }
-    ratio = ratios.get(power, 0.40)
+    ratio = ratios.get(power, 0.35)
     return int(original_size * ratio)
 
 async def hybrid_compress_pdf(input_path, output_path, power=3):
     """
-    Hybrid 2-Stage Compression: Pikepdf (Structural) + Ghostscript/PyMuPDF (Content)
+    Hybrid PDF Compression: Structural + Image Re-encoding
+    
+    Uses high-quality JPEG encoding (65-85) to maintain visual fidelity
+    while achieving significant file size reduction.
     
     :param power: 
-        2: Printer (300dpi) - Good quality, ~50% reduction
+        2: Printer - Minimal compression, excellent quality (90% scale, quality 85)
+        3: eBook - Balanced compression (70% scale, quality 75)
+        4: Screen - Maximum compression (55% scale, quality 65)
         3: eBook (150dpi) - Best balance, ~70% reduction  
         4: Screen (72dpi) - Max compression, ~90% reduction
     :return: (success, original_size, compressed_size)
@@ -74,26 +79,27 @@ async def hybrid_compress_pdf(input_path, output_path, power=3):
         else:
             input_for_stage2 = input_path
         
-        # STAGE 2: Content Compression with PyMuPDF
+        # STAGE 2: Image Compression with PyMuPDF
+        # Compress images while maintaining good quality to prevent "washed out" colors
         if HAS_PYMUPDF and fitz is not None:
             doc = fitz.open(input_for_stage2)
             compressed_doc = fitz.open()
             
-            # Improved scale factors - less aggressive to preserve quality
+            # Balanced scale factors - compress without excessive quality loss
             scale_factors = {
-                2: 0.85,  # Printer: 85% scale (minimal loss)
-                3: 0.65,  # eBook: 65% scale (balanced)
-                4: 0.50   # Screen: 50% scale (still readable)
+                2: 0.90,  # Printer: 90% scale (minimal visible loss)
+                3: 0.70,  # eBook: 70% scale (good balance)
+                4: 0.55   # Screen: 55% scale (significant compression)
             }
-            scale = scale_factors.get(power, 0.65)
+            scale = scale_factors.get(power, 0.70)
             
-            # Better quality levels to preserve visual appearance
+            # Higher quality levels to prevent dull/washed out appearance
             quality_levels = {
-                2: 50,  # Printer: High quality (minimal artifacts)
-                3: 35,  # eBook: Good quality (balanced)
-                4: 25   # Screen: Acceptable quality (readable, sharp text)
+                2: 85,  # Printer: Very high quality
+                3: 75,  # eBook: High quality
+                4: 65   # Screen: Good quality (still sharp)
             }
-            quality = quality_levels.get(power, 35)
+            quality = quality_levels.get(power, 75)
             
             for page_num in range(len(doc)):
                 # Check if task was cancelled
@@ -104,9 +110,11 @@ async def hybrid_compress_pdf(input_path, output_path, power=3):
                     del doc, compressed_doc
                     return False, original_size, original_size
                 
-                page = doc[page_num]
+                page = doc.load_page(page_num)
                 mat = fitz.Matrix(scale, scale)
+                # Use alpha=False to avoid transparency issues
                 pix = page.get_pixmap(matrix=mat, alpha=False)
+                # Use higher quality JPEG encoding
                 img_bytes = pix.tobytes("jpeg", jpg_quality=quality)
                 
                 new_page = compressed_doc.new_page(width=page.rect.width, height=page.rect.height)
@@ -117,12 +125,13 @@ async def hybrid_compress_pdf(input_path, output_path, power=3):
             
             await asyncio.sleep(0.2)
             
+            # Save with optimization flags
             compressed_doc.save(
                 temp_compressed,
-                garbage=4,
-                deflate=True,
-                clean=True,
-                pretty=False
+                garbage=4,           # Maximum garbage collection
+                deflate=True,        # Compress streams
+                clean=True,          # Clean content streams
+                pretty=False         # Minimal whitespace
             )
             compressed_doc.close()
             del compressed_doc
@@ -183,7 +192,7 @@ async def compress_command_handler(client: Client, message: Message):
             # Create inline keyboard with 3 quality options
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton(
-                    f"🖨️ High Quality (~{printer_size/1024:.0f} KB)",
+                    f"🖨️ Best Quality (~{printer_size/1024:.0f} KB)",
                     callback_data=f"compress_2_{message.reply_to_message.id}_{task_id}"
                 )],
                 [InlineKeyboardButton(
@@ -191,7 +200,7 @@ async def compress_command_handler(client: Client, message: Message):
                     callback_data=f"compress_3_{message.reply_to_message.id}_{task_id}"
                 )],
                 [InlineKeyboardButton(
-                    f"📉 Max Compression (~{screen_size/1024:.0f} KB)",
+                    f"📉 Smallest Size (~{screen_size/1024:.0f} KB)",
                     callback_data=f"compress_4_{message.reply_to_message.id}_{task_id}"
                 )]
             ])
@@ -199,6 +208,7 @@ async def compress_command_handler(client: Client, message: Message):
             await message.reply_text(
                 f"📄 **PDF Compression Options**\n\n"
                 f"Original size: {file_size/1024:.1f} KB\n\n"
+                f"ℹ️ *High-quality compression* - Maintains visual fidelity!\n"
                 f"Choose compression level:",
                 reply_markup=keyboard
             )
@@ -282,9 +292,13 @@ async def perform_compression(client: Client, reply_to_message: Message, origina
         document = original_pdf_message.document
         file_name = document.file_name
         
-        # Generate output filename
-        quality_names = {2: "HQ", 3: "Balanced", 4: "MaxComp"}
-        compressed_pdf_filename = f"Compressed_{quality_names[power]}_{file_name}"
+        # Generate output filename: originalname_compressed.pdf
+        if file_name.lower().endswith('.pdf'):
+            base_name = file_name[:-4]  # Remove .pdf extension
+        else:
+            base_name = file_name
+        
+        compressed_pdf_filename = f"{base_name}_compressed.pdf"
         
         # Create cancel button
         cancel_keyboard = InlineKeyboardMarkup([

@@ -47,14 +47,24 @@ python main.py
 - `/start` - Start the bot and get a welcome message
 - `/help` - Show available commands and usage instructions
 - `/pdf [filename]` - Reply to an image with this command to convert it to PDF. If no filename is provided, it will use a unique filename based on user ID and timestamp.
+- `/compress [filename]` - Reply to a PDF with this command to compress it. If no filename is provided, it will use a unique filename based on user ID and timestamp.
 
 ## How it Works
 
-1. User sends an image to the bot
-2. User replies to the image with `/pdf` command (with optional filename)
+📷 *Image to PDF:*
+1. User sends an image to the bot **(Automatic conversion!)**
+2. OR user replies to an image with `/pdf` command (with optional filename)
 3. Bot downloads the image
-4. Bot converts the image to a PDF with the specified or unique filename
+4. Bot converts the image to a PDF with automatic compression
 5. Bot sends the PDF back to the user
+6. Bot deletes temporary files
+
+📄 *PDF Compression:*
+1. User sends a PDF to the bot
+2. User replies to the PDF with `/compress` command (with optional filename)
+3. Bot downloads the PDF
+4. Bot compresses the PDF using advanced optimization techniques
+5. Bot sends the compressed PDF back to the user with size reduction information
 6. Bot deletes temporary files
 
 ## Dependencies

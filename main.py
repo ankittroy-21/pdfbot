@@ -2,7 +2,7 @@ import os
 from pyrogram.client import Client
 from pyrogram import filters
 from config import API_ID, API_HASH, BOT_TOKEN
-from Modules.start import register
+from Modules.register import register
 
 # Initialize the bot client
 app = Client(
@@ -10,12 +10,12 @@ app = Client(
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
-    sleep_threshold=10  # Reduce sleep threshold to handle API calls more efficiently
+    sleep_threshold=1  # Reduce sleep threshold to handle API calls more efficiently
 )
 
 # Register handlers
 register(app)
- 
+
 if __name__ == "__main__":
     print("🤖 Bot has started!")
     try:

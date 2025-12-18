@@ -8,20 +8,39 @@ from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from PIL import Image
 import fitz  # PyMuPDF for better PDF creation
 from .core import create_progress_bar, ColorNormalizer
+from .supabase_client import SupabaseStorage, UserTracker
 
-# Dictionary to store collected images for each user
-collected_images_store = {}
+# Backward compatibility: Keep in-memory store for progress messages
+# (Supabase handles session data, but we need quick access to Pyrogram message objects)
+_progress_messages = {}
 
 async def multipdf_command_handler(client: Client, message: Message):
     """Start collecting images for multi-image PDF creation"""
     user_id = message.from_user.id
     
-    # Initialize the collection for this user
-    if user_id not in collected_images_store:
-        collected_images_store[user_id] = []
+    # Track user activity
+    await UserTracker.track_user(
+        user_id=user_id,
+        username=message.from_user.username,
+        first_name=message.from_user.first_name,
+        last_name=message.from_user.last_name
+    )
     
-    # Clear any previously collected images
-    collected_images_store[user_id] = []
+    # Check if user already has an active session
+    existing_session = await SupabaseStorage.get_user_session(user_id)
+    if existing_session:
+        # Clean up old session completely before starting new one
+        await SupabaseStorage.delete_session(existing_session)
+        _progress_messages.pop(user_id, None)
+        
+        # Clean up local temp files for this user
+        import shutil
+        temp_user_folder = f"downloads/temp_sessions/{existing_session}"
+        if os.path.exists(temp_user_folder):
+            try:
+                shutil.rmtree(temp_user_folder, ignore_errors=True)
+            except:
+                pass
     
     # Extract optional filename from command
     # Format: /multipdf [filename]
@@ -37,8 +56,8 @@ async def multipdf_command_handler(client: Client, message: Message):
         # Generate a unique filename based on user ID and timestamp
         pdf_filename = f"MULTIPDF_{message.from_user.id}_{int(time.time())}.pdf"
     
-    # Store the filename for later use
-    collected_images_store[f"{user_id}_filename"] = pdf_filename
+    # Create new session (images stored in memory, not Supabase)
+    session_id = await SupabaseStorage.create_session(user_id)
     
     await message.reply_text(
         f"📸 **I am ready to convert your images into a single PDF.**\n\n"
@@ -51,8 +70,9 @@ async def collect_image_handler(client: Client, message: Message):
     """Collect images for multi-image PDF creation"""
     user_id = message.from_user.id
     
-    # Check if user has started the collection process
-    if user_id not in collected_images_store or f"{user_id}_filename" not in collected_images_store:
+    # Check if user has an active session
+    session_id = await SupabaseStorage.get_user_session(user_id)
+    if not session_id:
         # Silently ignore photos sent without starting /multipdf
         # Users can still use /pdf to convert single images or /compress for PDFs
         return
@@ -66,11 +86,15 @@ async def collect_image_handler(client: Client, message: Message):
     downloaded_result = await client.download_media(file_id, file_name=f"temp_{file_id}.jpg")
     
     if downloaded_result and isinstance(downloaded_result, str):
-        # Add the downloaded image path to the collection
-        collected_images_store[user_id].append(downloaded_result)
+        # Get current image count before adding
+        current_images = await SupabaseStorage.get_session_images(session_id)
+        order = len(current_images)
         
-        # Get current count
-        image_count = len(collected_images_store[user_id])
+        # Add to Supabase
+        await SupabaseStorage.add_image(session_id, downloaded_result, order)
+        
+        # Get updated count
+        image_count = order + 1
         
         # Create/update progress message with Done and Cancel buttons
         keyboard = InlineKeyboardMarkup([
@@ -81,7 +105,7 @@ async def collect_image_handler(client: Client, message: Message):
         ])
         
         # Check if this is the first image - create new progress message
-        if f"{user_id}_progress_msg" not in collected_images_store:
+        if user_id not in _progress_messages:
             # Create the progress message for the first time
             progress_msg = await message.reply_text(
                 f"📥 **Downloaded {image_count} image(s)**\n"
@@ -89,10 +113,10 @@ async def collect_image_handler(client: Client, message: Message):
                 f"Continue sending images or click **Done** to proceed.",
                 reply_markup=keyboard
             )
-            collected_images_store[f"{user_id}_progress_msg"] = progress_msg
+            _progress_messages[user_id] = progress_msg
         else:
             # Update the existing progress message
-            progress_msg = collected_images_store[f"{user_id}_progress_msg"]
+            progress_msg = _progress_messages[user_id]
             try:
                 await progress_msg.edit_text(
                     f"📥 **Downloaded {image_count} image(s)**\n"
@@ -108,7 +132,7 @@ async def collect_image_handler(client: Client, message: Message):
                     f"Continue sending images or click **Done** to proceed.",
                     reply_markup=keyboard
                 )
-                collected_images_store[f"{user_id}_progress_msg"] = new_progress
+                _progress_messages[user_id] = new_progress
     else:
         # Show error message
         await message.reply_text("❌ Failed to download the image.")
@@ -117,16 +141,27 @@ async def done_command_handler(client: Client, message: Message):
     """Show A4/Auto-Size buttons after user has collected images"""
     user_id = message.from_user.id
     
-    # Check if user has collected any images
-    if user_id not in collected_images_store or len(collected_images_store[user_id]) == 0:
+    # Get active session
+    session_id = await SupabaseStorage.get_user_session(user_id)
+    if not session_id:
         await message.reply_text("❌ No images collected. Use `/multipdf` to start collecting images.")
         return
     
-    # Get the collected images count
-    image_count = len(collected_images_store[user_id])
+    # Get session details
+    session = await SupabaseStorage.get_session(session_id)
+    if not session:
+        await message.reply_text("❌ Session not found. Please try again.")
+        return
     
-    # Get the filename for the PDF
-    pdf_filename = collected_images_store.get(f"{user_id}_filename", f"MULTIPDF_{user_id}_{int(time.time())}.pdf")
+    # Get image count
+    images = await SupabaseStorage.get_session_images(session_id)
+    image_count = len(images)
+    
+    if image_count == 0:
+        await message.reply_text("❌ No images collected. Send some images first!")
+        return
+    
+    pdf_filename = session.get('filename', f"MULTIPDF_{user_id}_{int(time.time())}.pdf") if session else f"MULTIPDF_{user_id}_{int(time.time())}.pdf"
     
     # Show A4/Auto-Size buttons
     keyboard = InlineKeyboardMarkup([
@@ -155,16 +190,25 @@ async def multipdf_callback_handler(client: Client, callback_query):
     
     # Handle "Done" button - show A4/Auto-Size selection
     if callback_data.startswith("multipdf_done_"):
-        # Check if user has collected any images
-        if user_id not in collected_images_store or len(collected_images_store[user_id]) == 0:
+        # Get active session
+        session_id = await SupabaseStorage.get_user_session(user_id)
+        if not session_id:
             await callback_query.answer("❌ No images collected.", show_alert=True)
             return
         
-        # Get the collected images count
-        image_count = len(collected_images_store[user_id])
+        # Update session status to 'awaiting_selection' to prevent auto-cleanup
+        await SupabaseStorage.update_session_status(session_id, 'awaiting_selection')
         
-        # Get the filename for the PDF
-        pdf_filename = collected_images_store.get(f"{user_id}_filename", f"MULTIPDF_{user_id}_{int(time.time())}.pdf")
+        # Get session details and images
+        session = await SupabaseStorage.get_session(session_id)
+        images = await SupabaseStorage.get_session_images(session_id)
+        image_count = len(images)
+        
+        if image_count == 0:
+            await callback_query.answer("❌ No images collected.", show_alert=True)
+            return
+        
+        pdf_filename = session.get('filename', f"MULTIPDF_{user_id}_{int(time.time())}.pdf") if session else f"MULTIPDF_{user_id}_{int(time.time())}.pdf"
         
         # Show A4/Auto-Size buttons
         keyboard = InlineKeyboardMarkup([
@@ -197,18 +241,30 @@ async def multipdf_callback_handler(client: Client, callback_query):
         await callback_query.answer("❌ Invalid selection", show_alert=True)
         return
     
-    # Check if user has collected images
-    if user_id not in collected_images_store or len(collected_images_store[user_id]) == 0:
-        await callback_query.answer("❌ No images found. Please try again.", show_alert=True)
+    # Get active session
+    session_id = await SupabaseStorage.get_user_session(user_id)
+    if not session_id:
+        await callback_query.answer("❌ Session expired. Please start again with /multipdf", show_alert=True)
         return
+    
+    # Refresh session timer (extends by 30 more minutes)
+    await SupabaseStorage.update_session_status(session_id, 'processing')
     
     await callback_query.answer("⏳ Creating PDF...")
     
-    # Get the collected images
-    collected_images = collected_images_store[user_id]
+    # Get session details and images
+    session = await SupabaseStorage.get_session(session_id)
+    collected_images = await SupabaseStorage.get_session_images(session_id)
+    
+    if not collected_images:
+        await callback_query.answer("❌ No images found.", show_alert=True)
+        return
     
     # Get the filename for the PDF
-    pdf_filename = collected_images_store.get(f"{user_id}_filename", f"MULTIPDF_{user_id}_{int(time.time())}.pdf")
+    pdf_filename = session.get('filename', f"MULTIPDF_{user_id}_{int(time.time())}.pdf") if session else f"MULTIPDF_{user_id}_{int(time.time())}.pdf"
+    
+    # Update session status
+    await SupabaseStorage.update_session_status(session_id, 'processing')
     
     # Update the message to show processing
     await callback_query.message.edit_text(
@@ -396,13 +452,18 @@ async def multipdf_callback_handler(client: Client, callback_query):
                     f"Page Mode: {mode_text}"
         )
         
+        # Track successful PDF creation
+        await UserTracker.increment_pdf_count(user_id)
+        
         # Update progress - complete
         await progress_msg.edit_text(f"{create_progress_bar(100)}\n\nStatus: Complete!")
         await asyncio.sleep(1)  # Small delay before deleting progress message
         if progress_msg:
             await progress_msg.delete()
         
-        # Clean up temporary image files with retry logic
+        # COMPREHENSIVE CLEANUP - Free all storage
+        
+        # 1. Clean up original downloaded images (from Telegram)
         for img_path in collected_images:
             for attempt in range(3):
                 try:
@@ -413,7 +474,7 @@ async def multipdf_callback_handler(client: Client, callback_query):
                     if attempt < 2:
                         await asyncio.sleep(0.3)
         
-        # Clean up optimized image files
+        # 2. Clean up optimized image files
         for img_path in optimized_image_paths:
             for attempt in range(3):
                 try:
@@ -424,7 +485,7 @@ async def multipdf_callback_handler(client: Client, callback_query):
                     if attempt < 2:
                         await asyncio.sleep(0.3)
         
-        # Clean up the generated PDF file after sending
+        # 3. Clean up the generated PDF file after sending
         for attempt in range(3):
             try:
                 if os.path.exists(pdf_filename):
@@ -434,10 +495,21 @@ async def multipdf_callback_handler(client: Client, callback_query):
                 if attempt < 2:
                     await asyncio.sleep(0.3)
         
-        # Clear the collection for this user
-        collected_images_store.pop(user_id, None)
-        collected_images_store.pop(f"{user_id}_filename", None)
-        collected_images_store.pop(f"{user_id}_progress_msg", None)
+        # 4. Clean up user-specific temp session folder (downloaded from Supabase)
+        import shutil
+        temp_session_folder = f"downloads/temp_sessions/{session_id}"
+        if os.path.exists(temp_session_folder):
+            try:
+                shutil.rmtree(temp_session_folder, ignore_errors=True)
+                print(f"🗑️ Cleaned up local temp folder: {temp_session_folder}")
+            except Exception as e:
+                print(f"⚠️ Failed to delete temp folder: {e}")
+        
+        # 5. Delete session from Supabase (removes Storage files and database records)
+        await SupabaseStorage.delete_session(session_id)
+        _progress_messages.pop(user_id, None)
+        
+        print(f"✅ Complete cleanup for session {session_id}")
         
     except Exception as e:
         await callback_query.message.reply_text(f"❌ An error occurred while creating the PDF: {str(e)}")
@@ -463,10 +535,10 @@ async def multipdf_callback_handler(client: Client, callback_query):
             except:
                 pass
         
-        # Clear the collection for this user
-        collected_images_store.pop(user_id, None)
-        collected_images_store.pop(f"{user_id}_filename", None)
-        collected_images_store.pop(f"{user_id}_progress_msg", None)
+        # Clear the session and progress message
+        if session_id:
+            await SupabaseStorage.delete_session(session_id)
+        _progress_messages.pop(user_id, None)
 
 async def handle_multipdf_cancel(client: Client, callback_query):
     """Handle multi-PDF cancel button clicks"""
@@ -483,18 +555,30 @@ async def handle_multipdf_cancel(client: Client, callback_query):
         user_id_str = data.replace("cancel_multipdf_collection_", "")
         user_id = int(user_id_str)
         
-        # Clean up stored photos
-        if user_id in collected_images_store:
-            photos = collected_images_store.get(user_id, [])
-            for photo_path in photos:
+        # Clean up session
+        session_id = await SupabaseStorage.get_user_session(user_id)
+        if session_id:
+            # Clean up local files
+            images = await SupabaseStorage.get_session_images(session_id)
+            for photo_path in images:
                 try:
                     if os.path.exists(photo_path):
                         os.remove(photo_path)
                 except:
                     pass
-            collected_images_store.pop(user_id, None)
-            collected_images_store.pop(f"{user_id}_filename", None)
-            collected_images_store.pop(f"{user_id}_progress_msg", None)
+            
+            # Clean up temp session folder
+            import shutil
+            temp_session_folder = f"downloads/temp_sessions/{session_id}"
+            if os.path.exists(temp_session_folder):
+                try:
+                    shutil.rmtree(temp_session_folder, ignore_errors=True)
+                except:
+                    pass
+            
+            # Delete from Supabase (Storage + Database)
+            await SupabaseStorage.delete_session(session_id)
+        _progress_messages.pop(user_id, None)
         
         await callback_query.answer("✅ Cancelled!", show_alert=True)
         try:
@@ -508,18 +592,30 @@ async def handle_multipdf_cancel(client: Client, callback_query):
         user_id_str = data.replace("cancel_multipdf_selection_", "")
         user_id = int(user_id_str)
         
-        # Clean up stored photos
-        if user_id in collected_images_store:
-            photos = collected_images_store.get(user_id, [])
-            for photo_path in photos:
+        # Clean up session
+        session_id = await SupabaseStorage.get_user_session(user_id)
+        if session_id:
+            # Clean up local files
+            images = await SupabaseStorage.get_session_images(session_id)
+            for photo_path in images:
                 try:
                     if os.path.exists(photo_path):
                         os.remove(photo_path)
                 except:
                     pass
-            collected_images_store.pop(user_id, None)
-            collected_images_store.pop(f"{user_id}_filename", None)
-            collected_images_store.pop(f"{user_id}_progress_msg", None)
+            
+            # Clean up temp session folder
+            import shutil
+            temp_session_folder = f"downloads/temp_sessions/{session_id}"
+            if os.path.exists(temp_session_folder):
+                try:
+                    shutil.rmtree(temp_session_folder, ignore_errors=True)
+                except:
+                    pass
+            
+            # Delete from Supabase (Storage + Database)
+            await SupabaseStorage.delete_session(session_id)
+        _progress_messages.pop(user_id, None)
         
         await callback_query.answer("✅ Cancelled!", show_alert=True)
         try:
@@ -532,13 +628,14 @@ async def cancel_command_handler(client: Client, message: Message):
     """Cancel the multi-image PDF collection process"""
     user_id = message.from_user.id
     
-    # Check if user has started the collection process
-    if user_id not in collected_images_store:
+    # Check if user has an active session
+    session_id = await SupabaseStorage.get_user_session(user_id)
+    if not session_id:
         await message.reply_text("❌ No collection process to cancel.")
         return
     
     # Get the collected images to clean them up
-    collected_images = collected_images_store.get(user_id, [])
+    collected_images = await SupabaseStorage.get_session_images(session_id)
     
     # Clean up temporary image files
     for img_path in collected_images:
@@ -548,9 +645,8 @@ async def cancel_command_handler(client: Client, message: Message):
         except:
             pass  # Ignore errors if file is still locked
     
-    # Clear the collection for this user
-    collected_images_store.pop(user_id, None)
-    collected_images_store.pop(f"{user_id}_filename", None)
-    collected_images_store.pop(f"{user_id}_progress_msg", None)
+    # Clear the session and progress message
+    await SupabaseStorage.delete_session(session_id)
+    _progress_messages.pop(user_id, None)
     
     await message.reply_text("✅ Multi-image PDF collection cancelled. All collected images have been cleared.")

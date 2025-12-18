@@ -8,10 +8,15 @@ load_dotenv()
 api_id_str = os.getenv("API_ID")
 api_hash = os.getenv("API_HASH")
 bot_token = os.getenv("BOT_TOKEN")
+supabase_url = os.getenv("SUPABASE_URL")
+supabase_key = os.getenv("SUPABASE_KEY")
 
 # Validate that all required environment variables are set
 if not api_id_str or not api_hash or not bot_token:
     raise ValueError("Missing required environment variables. Please check your .env file.")
+
+# Supabase is optional - bot works without it (falls back to in-memory storage)
+USE_SUPABASE = bool(supabase_url and supabase_key)
 
 # Convert API_ID to integer
 try:
@@ -21,3 +26,5 @@ except (ValueError, TypeError):
 
 API_HASH = api_hash
 BOT_TOKEN = bot_token
+SUPABASE_URL = supabase_url
+SUPABASE_KEY = supabase_key

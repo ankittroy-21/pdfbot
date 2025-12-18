@@ -145,3 +145,4 @@ Thumbs.db
 temp_*.jpg
 temp_*.pdf
 *.pdf
+supabase_schema.sql

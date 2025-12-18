@@ -4,7 +4,7 @@ import os
 import asyncio
 import time
 from pyrogram.client import Client
-from pyrogram.types import Message
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from PIL import Image
 import fitz  # PyMuPDF for better PDF creation
 from .core import create_progress_bar, ColorNormalizer
@@ -23,26 +23,13 @@ async def multipdf_command_handler(client: Client, message: Message):
     # Clear any previously collected images
     collected_images_store[user_id] = []
     
-    # Extract filename and page mode from command
-    # Format: /multipdf [a4|autofit] [filename]
+    # Extract optional filename from command
+    # Format: /multipdf [filename]
     command_parts = message.text.split()
-    page_mode = "a4"  # Default to A4
     pdf_filename = None
     
     if len(command_parts) > 1:
-        # Check if first argument is page mode
-        if command_parts[1].lower() in ["a4", "autofit"]:
-            page_mode = command_parts[1].lower()
-            # Check for filename after mode
-            if len(command_parts) > 2:
-                pdf_filename = " ".join(command_parts[2:])
-        else:
-            # First argument is filename, use default A4 mode
-            pdf_filename = " ".join(command_parts[1:])
-    
-    # Process filename
-    if pdf_filename:
-        pdf_filename = pdf_filename.strip()
+        pdf_filename = " ".join(command_parts[1:]).strip()
         # Ensure the filename ends with .pdf
         if not pdf_filename.lower().endswith('.pdf'):
             pdf_filename += '.pdf'
@@ -50,24 +37,14 @@ async def multipdf_command_handler(client: Client, message: Message):
         # Generate a unique filename based on user ID and timestamp
         pdf_filename = f"MULTIPDF_{message.from_user.id}_{int(time.time())}.pdf"
     
-    # Store the filename and page mode for later use
+    # Store the filename for later use
     collected_images_store[f"{user_id}_filename"] = pdf_filename
-    collected_images_store[f"{user_id}_pagemode"] = page_mode
-    
-    mode_description = "A4 standard size" if page_mode == "a4" else "Auto-fit to largest image"
     
     await message.reply_text(
-        f"📸 **Multi-Image PDF Collection Started**\n\n"
-        f"Page Mode: `{mode_description}`\n"
-        f"PDF filename: `{pdf_filename}`\n\n"
-        f"Send images to collect them for PDF creation.\n"
-        f"When done, use `/done` to create the PDF.\n"
-        f"Or use `/cancel` to cancel the process.\n\n"
-        f"💡 **Usage:**\n"
-        f"`/multipdf` - A4 with auto name\n"
-        f"`/multipdf a4 myfile` - A4 with custom name\n"
-        f"`/multipdf autofit` - Auto-fit to largest image\n"
-        f"`/multipdf autofit myfile` - Auto-fit with custom name"
+        f"📸 **I am ready to convert your images into a single PDF.**\n\n"
+        f"📤 Send them now.\n"
+        f"✅ Click **Done** button when finished\n\n"
+        f"PDF filename: `{pdf_filename}`"
     )
 
 async def collect_image_handler(client: Client, message: Message):
@@ -76,14 +53,8 @@ async def collect_image_handler(client: Client, message: Message):
     
     # Check if user has started the collection process
     if user_id not in collected_images_store or f"{user_id}_filename" not in collected_images_store:
-        # If not started, inform the user
-        await message.reply_text(
-            "📸 To collect images for a multi-image PDF:\n"
-            "1. Use `/multipdf` to start the collection process\n"
-            "2. Send images to be collected\n"
-            "3. Use `/done` to create the PDF\n"
-            "4. Or use `/cancel` to cancel the process"
-        )
+        # Silently ignore photos sent without starting /multipdf
+        # Users can still use /pdf to convert single images or /compress for PDFs
         return
     
     # Get the photo
@@ -98,14 +69,52 @@ async def collect_image_handler(client: Client, message: Message):
         # Add the downloaded image path to the collection
         collected_images_store[user_id].append(downloaded_result)
         
-        # Notify user about the collection
+        # Get current count
         image_count = len(collected_images_store[user_id])
-        await message.reply_text(f"✅ Image collected ({image_count} total). Continue sending images or use `/done` to create PDF.")
+        
+        # Create/update progress message with Done and Cancel buttons
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Done", callback_data=f"multipdf_done_{user_id}"),
+                InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_multipdf_collection_{user_id}")
+            ]
+        ])
+        
+        # Check if this is the first image - create new progress message
+        if f"{user_id}_progress_msg" not in collected_images_store:
+            # Create the progress message for the first time
+            progress_msg = await message.reply_text(
+                f"📥 **Downloaded {image_count} image(s)**\n"
+                f"\n"
+                f"Continue sending images or click **Done** to proceed.",
+                reply_markup=keyboard
+            )
+            collected_images_store[f"{user_id}_progress_msg"] = progress_msg
+        else:
+            # Update the existing progress message
+            progress_msg = collected_images_store[f"{user_id}_progress_msg"]
+            try:
+                await progress_msg.edit_text(
+                    f"📥 **Downloaded {image_count} image(s)**\n"
+                    f"\n"
+                    f"Continue sending images or click **Done** to proceed.",
+                    reply_markup=keyboard
+                )
+            except Exception as e:
+                # If message was deleted or edit failed, create a new one
+                new_progress = await message.reply_text(
+                    f"📥 **Downloaded {image_count} image(s)**\n"
+                    f"\n"
+                    f"Continue sending images or click **Done** to proceed.",
+                    reply_markup=keyboard
+                )
+                collected_images_store[f"{user_id}_progress_msg"] = new_progress
     else:
+        # Show error message
         await message.reply_text("❌ Failed to download the image.")
 
 async def done_command_handler(client: Client, message: Message):
-    """Process collected images and create a single PDF"""
+    """Show A4/Auto-Size buttons after user has collected images"""
     user_id = message.from_user.id
     
     # Check if user has collected any images
@@ -113,19 +122,106 @@ async def done_command_handler(client: Client, message: Message):
         await message.reply_text("❌ No images collected. Use `/multipdf` to start collecting images.")
         return
     
+    # Get the collected images count
+    image_count = len(collected_images_store[user_id])
+    
+    # Get the filename for the PDF
+    pdf_filename = collected_images_store.get(f"{user_id}_filename", f"MULTIPDF_{user_id}_{int(time.time())}.pdf")
+    
+    # Show A4/Auto-Size buttons
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📄 A4 Standard", callback_data=f"multipdf_a4_{user_id}"),
+            InlineKeyboardButton("📐 Auto-Size", callback_data=f"multipdf_auto_{user_id}")
+        ],
+        [
+            InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_multipdf_selection_{user_id}")
+        ]
+    ])
+    
+    await message.reply_text(
+        f"✅ **{image_count} image(s) collected!**\n"
+        f"Filename: `{pdf_filename}`\n\n"
+        f"📄 **A4 Standard:** Fixed A4 page size (595×842px) with white borders\n"
+        f"📐 **Auto-Size:** Best size based on your images\n\n"
+        f"Choose your preferred page size:",
+        reply_markup=keyboard
+    )
+
+async def multipdf_callback_handler(client: Client, callback_query):
+    """Handle Done button, A4/Auto-Size button clicks"""
+    user_id = callback_query.from_user.id
+    callback_data = callback_query.data
+    
+    # Handle "Done" button - show A4/Auto-Size selection
+    if callback_data.startswith("multipdf_done_"):
+        # Check if user has collected any images
+        if user_id not in collected_images_store or len(collected_images_store[user_id]) == 0:
+            await callback_query.answer("❌ No images collected.", show_alert=True)
+            return
+        
+        # Get the collected images count
+        image_count = len(collected_images_store[user_id])
+        
+        # Get the filename for the PDF
+        pdf_filename = collected_images_store.get(f"{user_id}_filename", f"MULTIPDF_{user_id}_{int(time.time())}.pdf")
+        
+        # Show A4/Auto-Size buttons
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("📄 A4 Standard", callback_data=f"multipdf_a4_{user_id}"),
+                InlineKeyboardButton("📐 Auto-Size", callback_data=f"multipdf_auto_{user_id}")
+            ],
+            [
+                InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_multipdf_selection_{user_id}")
+            ]
+        ])
+        
+        await callback_query.message.edit_text(
+            f"✅ **{image_count} image(s) collected!**\n"
+            f"Filename: `{pdf_filename}`\n\n"
+            f"📄 **A4 Standard:** Fixed A4 page size (595×842px) with white borders\n"
+            f"📐 **Auto-Size:** Best size based on your images\n\n"
+            f"Choose your preferred page size:",
+            reply_markup=keyboard
+        )
+        await callback_query.answer()
+        return
+    
+    # Parse callback data: multipdf_a4_{user_id} or multipdf_auto_{user_id}
+    if callback_data.startswith("multipdf_a4_"):
+        page_mode = "a4"
+    elif callback_data.startswith("multipdf_auto_"):
+        page_mode = "autofit"
+    else:
+        await callback_query.answer("❌ Invalid selection", show_alert=True)
+        return
+    
+    # Check if user has collected images
+    if user_id not in collected_images_store or len(collected_images_store[user_id]) == 0:
+        await callback_query.answer("❌ No images found. Please try again.", show_alert=True)
+        return
+    
+    await callback_query.answer("⏳ Creating PDF...")
+    
     # Get the collected images
     collected_images = collected_images_store[user_id]
     
-    # Get the filename and page mode for the PDF
+    # Get the filename for the PDF
     pdf_filename = collected_images_store.get(f"{user_id}_filename", f"MULTIPDF_{user_id}_{int(time.time())}.pdf")
-    page_mode = collected_images_store.get(f"{user_id}_pagemode", "a4")
+    
+    # Update the message to show processing
+    await callback_query.message.edit_text(
+        f"⏳ Creating PDF with **{'A4 Standard' if page_mode == 'a4' else 'Auto-Size'}** mode...\n"
+        f"Images: {len(collected_images)}"
+    )
     
     # Create progress message
     progress_msg = None
     optimized_image_paths = []
     
     try:
-        progress_msg = await message.reply_text(f"{create_progress_bar(0)}\n\nStatus: Processing images...")
+        progress_msg = await callback_query.message.reply_text(f"{create_progress_bar(0)}\n\nStatus: Processing images...")
         
         # Update progress - loading images
         await progress_msg.edit_text(f"{create_progress_bar(10)}\n\nStatus: Loading images...")
@@ -172,7 +268,7 @@ async def done_command_handler(client: Client, message: Message):
             img.close()
         
         if not optimized_image_paths:
-            await message.reply_text("❌ No valid images to process.")
+            await callback_query.message.reply_text("❌ No valid images to process.")
             return
         
         # Update progress - creating PDF
@@ -205,38 +301,40 @@ async def done_command_handler(client: Client, message: Message):
                 img = Image.open(img_path)
                 img_width, img_height = img.size
                 
-                # Check if image needs padding/centering
-                if img_width < target_width or img_height < target_height:
-                    # Create a white canvas of target size
-                    canvas = Image.new('RGB', (target_width, target_height), 'white')
-                    
-                    # Calculate position to center the image
-                    x_offset = (target_width - img_width) // 2
-                    y_offset = (target_height - img_height) // 2
-                    
-                    # Paste the image onto the canvas
-                    canvas.paste(img, (x_offset, y_offset))
-                    img.close()
-                    
-                    # Save the padded image temporarily
-                    padded_path = f"padded_{img_path}"
-                    canvas.save(padded_path, 'JPEG', quality=75, optimize=True)
-                    canvas.close()
-                    
-                    # Use the padded image for PDF
-                    page = doc.new_page(width=target_width, height=target_height)
-                    page.insert_image(page.rect, filename=padded_path)
-                    
-                    # Clean up padded image
-                    try:
-                        os.remove(padded_path)
-                    except:
-                        pass
-                else:
-                    # Image fits perfectly or is larger - use as-is
-                    img.close()
-                    page = doc.new_page(width=img_width, height=img_height)
-                    page.insert_image(page.rect, filename=img_path)
+                # Always create a canvas at the target size
+                canvas = Image.new('RGB', (target_width, target_height), 'white')
+                
+                # Check if image needs to be resized to fit within target dimensions
+                if img_width > target_width or img_height > target_height:
+                    # Scale image down to fit within target size while maintaining aspect ratio
+                    ratio = min(target_width / img_width, target_height / img_height)
+                    new_width = int(img_width * ratio)
+                    new_height = int(img_height * ratio)
+                    img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                    img_width, img_height = new_width, new_height
+                
+                # Calculate position to center the image
+                x_offset = (target_width - img_width) // 2
+                y_offset = (target_height - img_height) // 2
+                
+                # Paste the image onto the canvas
+                canvas.paste(img, (x_offset, y_offset))
+                img.close()
+                
+                # Save the padded image temporarily
+                padded_path = f"padded_{img_path}"
+                canvas.save(padded_path, 'JPEG', quality=75, optimize=True)
+                canvas.close()
+                
+                # Use the padded image for PDF with target dimensions
+                page = doc.new_page(width=target_width, height=target_height)
+                page.insert_image(page.rect, filename=padded_path)
+                
+                # Clean up padded image
+                try:
+                    os.remove(padded_path)
+                except:
+                    pass
             
             # Save with optimization
             doc.save(
@@ -253,16 +351,25 @@ async def done_command_handler(client: Client, message: Message):
             for img_path in optimized_image_paths:
                 img = Image.open(img_path)
                 
-                # Pad to target size if needed
-                if img.width < target_width or img.height < target_height:
-                    canvas = Image.new('RGB', (target_width, target_height), 'white')
-                    x_offset = (target_width - img.width) // 2
-                    y_offset = (target_height - img.height) // 2
-                    canvas.paste(img, (x_offset, y_offset))
-                    img.close()
-                    processed_images.append(canvas)
-                else:
-                    processed_images.append(img)
+                # Always create a canvas at the target size
+                canvas = Image.new('RGB', (target_width, target_height), 'white')
+                
+                # Check if image needs to be resized to fit within target dimensions
+                if img.width > target_width or img.height > target_height:
+                    # Scale image down to fit within target size while maintaining aspect ratio
+                    ratio = min(target_width / img.width, target_height / img.height)
+                    new_width = int(img.width * ratio)
+                    new_height = int(img.height * ratio)
+                    img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                
+                # Calculate position to center the image
+                x_offset = (target_width - img.width) // 2
+                y_offset = (target_height - img.height) // 2
+                
+                # Paste the image onto the canvas
+                canvas.paste(img, (x_offset, y_offset))
+                img.close()
+                processed_images.append(canvas)
             
             if processed_images:
                 processed_images[0].save(
@@ -281,8 +388,8 @@ async def done_command_handler(client: Client, message: Message):
         await progress_msg.edit_text(f"{create_progress_bar(80)}\n\nStatus: Uploading PDF...")
         
         # Send the PDF back to the user
-        mode_text = "A4 Standard" if page_mode == "a4" else "Auto-Fit"
-        await message.reply_document(
+        mode_text = "A4 Standard" if page_mode == "a4" else "Auto-Size"
+        await callback_query.message.reply_document(
             pdf_filename,
             caption=f"📚 Multi-Image PDF: {pdf_filename}\n"
                     f"Contains {len(optimized_image_paths)} images.\n"
@@ -330,10 +437,10 @@ async def done_command_handler(client: Client, message: Message):
         # Clear the collection for this user
         collected_images_store.pop(user_id, None)
         collected_images_store.pop(f"{user_id}_filename", None)
-        collected_images_store.pop(f"{user_id}_pagemode", None)
+        collected_images_store.pop(f"{user_id}_progress_msg", None)
         
     except Exception as e:
-        await message.reply_text(f"❌ An error occurred while creating the PDF: {str(e)}")
+        await callback_query.message.reply_text(f"❌ An error occurred while creating the PDF: {str(e)}")
         if progress_msg:
             try:
                 await progress_msg.delete()
@@ -359,7 +466,67 @@ async def done_command_handler(client: Client, message: Message):
         # Clear the collection for this user
         collected_images_store.pop(user_id, None)
         collected_images_store.pop(f"{user_id}_filename", None)
-        collected_images_store.pop(f"{user_id}_pagemode", None)
+        collected_images_store.pop(f"{user_id}_progress_msg", None)
+
+async def handle_multipdf_cancel(client: Client, callback_query):
+    """Handle multi-PDF cancel button clicks"""
+    data_raw = callback_query.data
+    
+    # Handle both string and bytes
+    if isinstance(data_raw, bytes):
+        data = data_raw.decode('utf-8')
+    else:
+        data = str(data_raw)
+    
+    # Handle collection cancellation (from progress message)
+    if data.startswith("cancel_multipdf_collection_"):
+        user_id_str = data.replace("cancel_multipdf_collection_", "")
+        user_id = int(user_id_str)
+        
+        # Clean up stored photos
+        if user_id in collected_images_store:
+            photos = collected_images_store.get(user_id, [])
+            for photo_path in photos:
+                try:
+                    if os.path.exists(photo_path):
+                        os.remove(photo_path)
+                except:
+                    pass
+            collected_images_store.pop(user_id, None)
+            collected_images_store.pop(f"{user_id}_filename", None)
+            collected_images_store.pop(f"{user_id}_progress_msg", None)
+        
+        await callback_query.answer("✅ Cancelled!", show_alert=True)
+        try:
+            await callback_query.message.edit_text("❌ Multi-PDF collection cancelled.")
+        except:
+            pass
+        return
+    
+    # Handle selection cancellation (before conversion starts)
+    if data.startswith("cancel_multipdf_selection_"):
+        user_id_str = data.replace("cancel_multipdf_selection_", "")
+        user_id = int(user_id_str)
+        
+        # Clean up stored photos
+        if user_id in collected_images_store:
+            photos = collected_images_store.get(user_id, [])
+            for photo_path in photos:
+                try:
+                    if os.path.exists(photo_path):
+                        os.remove(photo_path)
+                except:
+                    pass
+            collected_images_store.pop(user_id, None)
+            collected_images_store.pop(f"{user_id}_filename", None)
+            collected_images_store.pop(f"{user_id}_progress_msg", None)
+        
+        await callback_query.answer("✅ Cancelled!", show_alert=True)
+        try:
+            await callback_query.message.edit_text("❌ Multi-PDF creation cancelled.")
+        except:
+            pass
+        return
 
 async def cancel_command_handler(client: Client, message: Message):
     """Cancel the multi-image PDF collection process"""
@@ -384,6 +551,6 @@ async def cancel_command_handler(client: Client, message: Message):
     # Clear the collection for this user
     collected_images_store.pop(user_id, None)
     collected_images_store.pop(f"{user_id}_filename", None)
-    collected_images_store.pop(f"{user_id}_pagemode", None)
+    collected_images_store.pop(f"{user_id}_progress_msg", None)
     
     await message.reply_text("✅ Multi-image PDF collection cancelled. All collected images have been cleared.")

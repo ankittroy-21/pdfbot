@@ -1,6 +1,7 @@
 """PDF compression command handler"""
 
 import os
+import shutil
 import asyncio
 import subprocess
 from pyrogram.client import Client
@@ -145,18 +146,17 @@ async def hybrid_compress_pdf(input_path, output_path, power=3):
         compressed_size = os.path.getsize(temp_compressed)
         
         if compressed_size < original_size:
-            os.rename(temp_compressed, output_path)
+            shutil.move(temp_compressed, output_path)
             return True, original_size, compressed_size
         else:
             # Use structural-only if it's smaller
             if os.path.exists(temp_structural):
                 structural_size = os.path.getsize(temp_structural)
                 if structural_size < original_size:
-                    os.rename(temp_structural, output_path)
+                    shutil.move(temp_structural, output_path)
                     return True, original_size, structural_size
             
             # Otherwise copy original
-            import shutil
             shutil.copy2(input_path, output_path)
             return False, original_size, original_size
             

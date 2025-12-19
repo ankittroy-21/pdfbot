@@ -29,3 +29,6 @@ BOT_TOKEN = bot_token
 # Ensure Supabase URL has trailing slash (required by Storage SDK)
 SUPABASE_URL = supabase_url.rstrip('/') + '/' if supabase_url else None
 SUPABASE_KEY = supabase_key
+
+# Redis Configuration (Optional - for distributed session storage)
+REDIS_URL = os.getenv("REDIS_URL")

@@ -1,0 +1,87 @@
+services:
+  # Redis for distributed session storage
+  redis:
+    image: redis:7-alpine
+    container_name: pdfbot-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - pdfbot-network
+
+  # PDF Bot Application
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pdfbot-app
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      # Telegram Bot Configuration
+      - API_ID=${API_ID}
+      - API_HASH=${API_HASH}
+      - BOT_TOKEN=${BOT_TOKEN}
+      
+      # Supabase Configuration
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_KEY=${SUPABASE_KEY}
+      
+      # Redis Configuration
+      - REDIS_URL=redis://redis:6379/0
+      
+      # Optional Configuration
+      - LOG_CHANNEL_ID=${LOG_CHANNEL_ID:-}
+      
+      # Performance Tuning
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+    volumes:
+      # Downloads directory for temp files
+      - downloads:/app/downloads
+    ports:
+      - "8080:8080"  # Health check endpoint
+    networks:
+      - pdfbot-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8080/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 40s
+      retries: 3
+
+  # Optional: Redis Commander for Redis management UI
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: pdfbot-redis-ui
+    restart: unless-stopped
+    depends_on:
+      - redis
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    ports:
+      - "8081:8081"
+    networks:
+      - pdfbot-network
+    profiles:
+      - monitoring  # Only start with: docker-compose --profile monitoring up
+
+volumes:
+  redis-data:
+    driver: local
+  downloads:
+    driver: local
+
+networks:
+  pdfbot-network:
+    driver: bridge

@@ -2,9 +2,13 @@ import os
 import asyncio
 from pyrogram.client import Client
 from pyrogram import filters
-from config import API_ID, API_HASH, BOT_TOKEN
+from config import API_ID, API_HASH, BOT_TOKEN, REDIS_URL
 from Modules.register import register
 from Modules.async_file_handler import AsyncFileHandler
+from Modules.redis_session import RedisSessionStorage
+from Modules.health_check import HealthCheckServer
+from Modules.session_adapter import SessionStorageAdapter
+from Modules.supabase_client import SupabaseStorage
 
 # Initialize the bot client
 app = Client(
@@ -14,6 +18,19 @@ app = Client(
     bot_token=BOT_TOKEN,
     sleep_threshold=1  # Reduce sleep threshold to handle API calls more efficiently
 )
+
+# Initialize Redis session storage (optional)
+redis_storage = RedisSessionStorage(REDIS_URL)
+
+# Initialize session adapter (Redis preferred, Supabase fallback)
+session_storage = SessionStorageAdapter(redis_storage, SupabaseStorage)
+
+# Set session storage in multipdf handler
+from Modules import multipdf_cmd
+multipdf_cmd.set_session_storage(session_storage)
+
+# Initialize health check server
+health_server = HealthCheckServer(app, redis_storage, port=8080)
 
 # Register handlers
 register(app)
@@ -58,8 +75,21 @@ async def periodic_cleanup():
 
 if __name__ == "__main__":
     print("🤖 Bot has started!")
-    # Start cleanup task in background
+    print("⚡ Phase 1 Optimizations Active:")
+    print("  ✅ Async file operations")
+    print("  ✅ Rate limiting (10 PDFs/min, 5 compressions/min, 3 multi-PDFs/2min)")
+    print("  ✅ Automatic cleanup every 30 minutes")
+    
+    # Get event loop
     loop = asyncio.get_event_loop()
+    
+    # Start Redis connection
+    loop.run_until_complete(redis_storage.connect())
+    
+    # Start health check server
+    loop.run_until_complete(health_server.start())
+    
+    # Start cleanup task in background
     cleanup_task = loop.create_task(periodic_cleanup())
     
     try:
@@ -75,9 +105,20 @@ if __name__ == "__main__":
         print("2. Make sure your API credentials are correct")
         print("3. Verify that your bot token is valid")
     finally:
-        # Cancel cleanup task on shutdown
+        # Cleanup tasks on shutdown
+        print("\n🛑 Shutting down...")
+        
+        # Cancel cleanup task
         cleanup_task.cancel()
         try:
             loop.run_until_complete(cleanup_task)
         except asyncio.CancelledError:
-            print("🛑 Cleanup task stopped")
+            print("  ✅ Cleanup task stopped")
+        
+        # Stop health server
+        loop.run_until_complete(health_server.stop())
+        
+        # Disconnect Redis
+        loop.run_until_complete(redis_storage.disconnect())
+        
+        print("👋 Goodbye!")

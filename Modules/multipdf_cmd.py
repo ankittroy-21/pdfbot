@@ -12,13 +12,29 @@ from .supabase_client import SupabaseStorage, UserTracker
 from .rate_limiter import multipdf_rate_limiter
 from .async_file_handler import AsyncFileHandler
 
+# Global session storage adapter (set by main.py)
+# Falls back to SupabaseStorage if not set
+_session_storage = None
+
+def set_session_storage(storage):
+    """Set the global session storage adapter"""
+    global _session_storage
+    _session_storage = storage
+
+def get_storage():
+    """Get the current session storage (Redis or Supabase)"""
+    return _session_storage if _session_storage else SupabaseStorage
+
 # Backward compatibility: Keep in-memory store for progress messages
-# (Supabase handles session data, but we need quick access to Pyrogram message objects)
+# Session storage is now handled by SessionStorageAdapter in main.py
 _progress_messages = {}
 
 async def multipdf_command_handler(client: Client, message: Message):
     """Start collecting images for multi-image PDF creation"""
     user_id = message.from_user.id
+    
+    # Get session storage adapter (Redis or Supabase)
+    storage = get_storage()
     
     # Check rate limit
     is_allowed, wait_seconds = multipdf_rate_limiter.check_rate_limit(user_id)
@@ -39,10 +55,10 @@ async def multipdf_command_handler(client: Client, message: Message):
     )
     
     # Check if user already has an active session
-    existing_session = await SupabaseStorage.get_user_session(user_id)
+    existing_session = await storage.get_user_session(user_id)
     if existing_session:
         # Clean up old session completely before starting new one
-        await SupabaseStorage.delete_session(existing_session)
+        await storage.delete_session(existing_session)
         _progress_messages.pop(user_id, None)
         
         # Clean up local temp files for this user
@@ -68,8 +84,8 @@ async def multipdf_command_handler(client: Client, message: Message):
         # Generate a unique filename based on user ID and timestamp
         pdf_filename = f"MULTIPDF_{message.from_user.id}_{int(time.time())}.pdf"
     
-    # Create new session (images stored in memory, not Supabase)
-    session_id = await SupabaseStorage.create_session(user_id)
+    # Create new session using adapter (Redis or Supabase)
+    session_id = await storage.create_session(user_id)  # type: ignore
     
     await message.reply_text(
         f"📸 **I am ready to convert your images into a single PDF.**\n\n"
@@ -81,9 +97,10 @@ async def multipdf_command_handler(client: Client, message: Message):
 async def collect_image_handler(client: Client, message: Message):
     """Collect images for multi-image PDF creation"""
     user_id = message.from_user.id
+    storage = get_storage()
     
     # Check if user has an active session
-    session_id = await SupabaseStorage.get_user_session(user_id)
+    session_id = await storage.get_user_session(user_id)
     if not session_id:
         # Silently ignore photos sent without starting /multipdf
         # Users can still use /pdf to convert single images or /compress for PDFs
@@ -99,11 +116,11 @@ async def collect_image_handler(client: Client, message: Message):
     
     if downloaded_result and isinstance(downloaded_result, str):
         # Get current image count before adding
-        current_images = await SupabaseStorage.get_session_images(session_id)
+        current_images = await storage.get_session_images(session_id)
         order = len(current_images)
         
-        # Add to Supabase
-        await SupabaseStorage.add_image(session_id, downloaded_result, order)
+        # Add to storage (Redis or Supabase)
+        await storage.add_image(session_id, downloaded_result, order)
         
         # Delete the temp file immediately after adding to Supabase
         await asyncio.sleep(0.2)

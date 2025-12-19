@@ -2,6 +2,19 @@
 
 A production-ready, high-performance Telegram bot for PDF operations with Docker support, Redis caching, and comprehensive monitoring.
 
+## ☁️ One-Click Deployment
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/ankittroy-21/pdfbot)
+
+**Required Environment Variables:**
+- `API_ID` - Get from [my.telegram.org/apps](https://my.telegram.org/apps)
+- `API_HASH` - Get from [my.telegram.org/apps](https://my.telegram.org/apps)  
+- `BOT_TOKEN` - Get from [@BotFather](https://t.me/BotFather)
+
+*Optional:* SUPABASE_URL, SUPABASE_KEY, LOG_CHANNEL_ID
+
+---
+
 ## 🚀 Quick Start (Docker - Recommended)
 
 ```bash
@@ -119,6 +132,35 @@ SUPABASE_URL=https://xxx.supabase.co/
 SUPABASE_KEY=your_supabase_key
 REDIS_URL=redis://localhost:6379/0  # Auto-configured in Docker
 LOG_CHANNEL_ID=-1001234567890        # Telegram channel for backups
+```
+
+---
+
+## 🌐 Deployment Options
+
+### Option 1: Render (One-Click)
+1. Click the **Deploy to Render** button at the top
+2. Enter required environment variables (API_ID, API_HASH, BOT_TOKEN)
+3. Deploy automatically (includes Redis)
+4. Free tier available!
+
+### Option 2: Railway
+```bash
+# Install Railway CLI
+npm i -g @railway/cli
+
+# Login and deploy
+railway login
+railway up
+```
+
+### Option 3: VPS (DigitalOcean, Linode, etc.)
+```bash
+git clone <your-repo>
+cd pdfbot
+cp .env.example .env
+# Edit .env with your credentials
+docker-compose up -d
 ```
 
 ---

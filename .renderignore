@@ -1,0 +1,55 @@
+# Render deployment ignore file
+# Similar to .dockerignore but for Render builds
+
+# Git
+.git/
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# Session files
+*.session
+*.session-journal
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+logs/
+*.log
+
+# Downloads
+downloads/
+temp/
+
+# Documentation (not needed in runtime)
+*.md
+!README.md
+
+# Docker files (Render doesn't need these)
+.dockerignore
+docker-compose.yml
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Backups
+*.bak
+*.backup

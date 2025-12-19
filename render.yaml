@@ -1,0 +1,68 @@
+# Render Blueprint for PDF Bot
+# Deploy with one click: https://render.com/deploy
+
+services:
+  # Redis Database
+  - type: redis
+    name: pdfbot-redis
+    ipAllowList: []
+    plan: free
+    maxmemoryPolicy: allkeys-lru
+
+  # PDF Bot Application
+  - type: web
+    name: pdfbot
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    numInstances: 1
+    envVars:
+      # Telegram Configuration (REQUIRED)
+      - key: API_ID
+        sync: false
+      - key: API_HASH
+        sync: false
+      - key: BOT_TOKEN
+        sync: false
+      
+      # Redis Connection (Auto-configured)
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: pdfbot-redis
+          property: connectionString
+      
+      # Supabase Configuration (Optional - for cloud storage)
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+      
+      # Log Channel (Optional)
+      - key: LOG_CHANNEL_ID
+        sync: false
+      
+      # Port Configuration (Render auto-assigns)
+      - key: PORT
+        value: 8080
+    
+    # Disk for temporary files
+    disk:
+      name: downloads
+      mountPath: /app/downloads
+      sizeGB: 1
+
+# Documentation for environment variables
+# 
+# REQUIRED:
+# - API_ID: Get from https://my.telegram.org/apps
+# - API_HASH: Get from https://my.telegram.org/apps
+# - BOT_TOKEN: Get from @BotFather on Telegram
+#
+# OPTIONAL:
+# - SUPABASE_URL: Your Supabase project URL (for cloud storage)
+# - SUPABASE_KEY: Your Supabase anon key
+# - LOG_CHANNEL_ID: Telegram channel ID for logging (format: -1001234567890)
+#
+# REDIS_URL is automatically configured by Render

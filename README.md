@@ -1,11 +1,24 @@
 # Telegram PDF Bot
 
-A Telegram bot that converts images to PDF files instantly.
+A high-performance Telegram bot that converts images to PDF files with async processing and intelligent rate limiting.
+
+## ⚡ Performance Features (Phase 1)
+
+- **Async File Operations**: Non-blocking I/O for faster processing
+- **Rate Limiting**: Prevents abuse with intelligent throttling
+  - PDFs: 10 conversions per minute
+  - Compression: 5 operations per minute
+  - Multi-PDF: 3 operations per 2 minutes
+- **Automatic Cleanup**: Removes temporary files every 30 minutes
+- **Resource Management**: Proper cleanup on errors and cancellations
 
 ## Features
 
 - Convert images to PDF files on command
+- Multi-image PDF creation
+- PDF compression with quality options
 - Reply with the generated PDF file with custom filename
+- Cloud storage integration (Supabase)
 - Simple start command to interact with the bot
 
 ## Requirements

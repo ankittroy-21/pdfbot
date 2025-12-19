@@ -6,6 +6,7 @@ import os
 import asyncio
 import fitz  # PyMuPDF
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from .async_file_handler import AsyncFileHandler
 
 # Active tasks dictionary to track conversions
 active_tasks = {}
@@ -323,27 +324,22 @@ async def convert_image_to_pdf(client, image_message, reply_message, pdf_filenam
             # Send the PDF back to the user
             await reply_message.reply_document(pdf_path, caption=f"Here's your PDF: {pdf_filename}")
             
-            # Clean up temporary files immediately after upload
-            # Use multiple attempts with delays if needed
-            for attempt in range(3):
-                try:
-                    if downloaded_path and os.path.exists(downloaded_path):
-                        os.remove(downloaded_path)
-                        downloaded_path = None
-                    break
-                except:
-                    if attempt < 2:
-                        await asyncio.sleep(0.3)
+            # Clean up temporary files immediately after upload using async file handler
+            # Wait a moment for file handles to be released
+            await asyncio.sleep(0.5)
             
-            for attempt in range(3):
-                try:
-                    if pdf_path and os.path.exists(pdf_path):
-                        os.remove(pdf_path)
-                        pdf_path = None
-                    break
-                except:
-                    if attempt < 2:
-                        await asyncio.sleep(0.3)
+            # Delete files asynchronously
+            files_to_delete = []
+            if downloaded_path and os.path.exists(downloaded_path):
+                files_to_delete.append(downloaded_path)
+            if pdf_path and os.path.exists(pdf_path):
+                files_to_delete.append(pdf_path)
+            
+            if files_to_delete:
+                await AsyncFileHandler.delete_files(files_to_delete)
+            
+            downloaded_path = None
+            pdf_path = None
             
             # Delete the progress message
             await progress_msg.delete()
@@ -380,14 +376,12 @@ async def convert_image_to_pdf(client, image_message, reply_message, pdf_filenam
         # Clean up task
         if task_id in active_tasks:
             del active_tasks[task_id]
-        # Clean up any temporary files if they exist
-        try:
-            if downloaded_path and isinstance(downloaded_path, str) and os.path.exists(downloaded_path):
-                os.remove(downloaded_path)
-        except:
-            pass
-        try:
-            if pdf_path and isinstance(pdf_path, str) and os.path.exists(pdf_path):
-                os.remove(pdf_path)
-        except:
-            pass
+        # Clean up any temporary files if they exist using async handler
+        files_to_cleanup = []
+        if downloaded_path and isinstance(downloaded_path, str) and os.path.exists(downloaded_path):
+            files_to_cleanup.append(downloaded_path)
+        if pdf_path and isinstance(pdf_path, str) and os.path.exists(pdf_path):
+            files_to_cleanup.append(pdf_path)
+        
+        if files_to_cleanup:
+            await AsyncFileHandler.delete_files(files_to_cleanup)

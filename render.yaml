@@ -46,12 +46,6 @@ services:
       # Port Configuration (Render auto-assigns)
       - key: PORT
         value: 8080
-    
-    # Disk for temporary files
-    disk:
-      name: downloads
-      mountPath: /app/downloads
-      sizeGB: 1
 
 # Documentation for environment variables
 # 

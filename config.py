@@ -26,5 +26,6 @@ except (ValueError, TypeError):
 
 API_HASH = api_hash
 BOT_TOKEN = bot_token
-SUPABASE_URL = supabase_url
+# Ensure Supabase URL has trailing slash (required by Storage SDK)
+SUPABASE_URL = supabase_url.rstrip('/') + '/' if supabase_url else None
 SUPABASE_KEY = supabase_key

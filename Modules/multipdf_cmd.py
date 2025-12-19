@@ -9,6 +9,8 @@ from PIL import Image
 import fitz  # PyMuPDF for better PDF creation
 from .core import create_progress_bar, ColorNormalizer
 from .supabase_client import SupabaseStorage, UserTracker
+from .rate_limiter import multipdf_rate_limiter
+from .async_file_handler import AsyncFileHandler
 
 # Backward compatibility: Keep in-memory store for progress messages
 # (Supabase handles session data, but we need quick access to Pyrogram message objects)
@@ -17,6 +19,16 @@ _progress_messages = {}
 async def multipdf_command_handler(client: Client, message: Message):
     """Start collecting images for multi-image PDF creation"""
     user_id = message.from_user.id
+    
+    # Check rate limit
+    is_allowed, wait_seconds = multipdf_rate_limiter.check_rate_limit(user_id)
+    if not is_allowed:
+        await message.reply_text(
+            f"⏱️ **Rate limit exceeded!**\n\n"
+            f"Please wait {wait_seconds} seconds before creating more multi-page PDFs.\n"
+            f"Multi-PDF processing is resource-intensive, so we limit requests to ensure quality service."
+        )
+        return
     
     # Track user activity
     await UserTracker.track_user(
@@ -92,6 +104,11 @@ async def collect_image_handler(client: Client, message: Message):
         
         # Add to Supabase
         await SupabaseStorage.add_image(session_id, downloaded_result, order)
+        
+        # Delete the temp file immediately after adding to Supabase
+        await asyncio.sleep(0.2)
+        if os.path.exists(downloaded_result):
+            await AsyncFileHandler.delete_file(downloaded_result)
         
         # Get updated count
         image_count = order + 1
@@ -463,37 +480,25 @@ async def multipdf_callback_handler(client: Client, callback_query):
         
         # COMPREHENSIVE CLEANUP - Free all storage
         
-        # 1. Clean up original downloaded images (from Telegram)
-        for img_path in collected_images:
-            for attempt in range(3):
-                try:
-                    if os.path.exists(img_path):
-                        os.remove(img_path)
-                    break
-                except:
-                    if attempt < 2:
-                        await asyncio.sleep(0.3)
+        # Wait for file handles to be released
+        await asyncio.sleep(0.5)
         
-        # 2. Clean up optimized image files
-        for img_path in optimized_image_paths:
-            for attempt in range(3):
-                try:
-                    if os.path.exists(img_path):
-                        os.remove(img_path)
-                    break
-                except:
-                    if attempt < 2:
-                        await asyncio.sleep(0.3)
+        # Prepare list of all files to delete
+        files_to_delete = []
         
-        # 3. Clean up the generated PDF file after sending
-        for attempt in range(3):
-            try:
-                if os.path.exists(pdf_filename):
-                    os.remove(pdf_filename)
-                break
-            except:
-                if attempt < 2:
-                    await asyncio.sleep(0.3)
+        # 1. Add original downloaded images (from Telegram)
+        files_to_delete.extend([img for img in collected_images if os.path.exists(img)])
+        
+        # 2. Add optimized image files
+        files_to_delete.extend([img for img in optimized_image_paths if os.path.exists(img)])
+        
+        # 3. Add the generated PDF file after sending
+        if os.path.exists(pdf_filename):
+            files_to_delete.append(pdf_filename)
+        
+        # Delete all files asynchronously
+        if files_to_delete:
+            await AsyncFileHandler.delete_files(files_to_delete)
         
         # 4. Clean up user-specific temp session folder (downloaded from Supabase)
         import shutil

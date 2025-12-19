@@ -6,6 +6,7 @@ import subprocess
 from pyrogram.client import Client
 from pyrogram import filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from .rate_limiter import compress_rate_limiter
 
 try:
     import fitz  # PyMuPDF
@@ -170,6 +171,18 @@ async def hybrid_compress_pdf(input_path, output_path, power=3):
 
 async def compress_command_handler(client: Client, message: Message):
     """Handle /compress command - show quality options"""
+    user_id = message.from_user.id
+    
+    # Check rate limit
+    is_allowed, wait_seconds = compress_rate_limiter.check_rate_limit(user_id)
+    if not is_allowed:
+        await message.reply_text(
+            f"⏱️ **Rate limit exceeded!**\n\n"
+            f"Please wait {wait_seconds} seconds before compressing more PDFs.\n"
+            f"Compression is resource-intensive, so we limit it to ensure quality service."
+        )
+        return
+    
     # Check if the message is a reply to a document (PDF)
     if message.reply_to_message and message.reply_to_message.document:
         document = message.reply_to_message.document

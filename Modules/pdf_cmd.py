@@ -3,9 +3,22 @@
 from pyrogram.client import Client
 from pyrogram.types import Message, CallbackQuery
 from .core import convert_image_to_pdf, active_tasks
+from .rate_limiter import pdf_rate_limiter
 
 async def pdf_command_handler(client: Client, message: Message):
     """Handle /pdf command when user replies to an image"""
+    user_id = message.from_user.id
+    
+    # Check rate limit
+    is_allowed, wait_seconds = pdf_rate_limiter.check_rate_limit(user_id)
+    if not is_allowed:
+        await message.reply_text(
+            f"⏱️ **Rate limit exceeded!**\n\n"
+            f"Please wait {wait_seconds} seconds before trying again.\n"
+            f"This prevents server overload and ensures fair usage for all users."
+        )
+        return
+    
     # If this is a reply to an image, process it
     if message.reply_to_message and message.reply_to_message.photo:
         # Extract filename from command if provided
@@ -53,4 +66,16 @@ async def handle_convert_callback(client: Client, callback_query: CallbackQuery)
 
 async def image_handler(client: Client, message: Message):
     """Handle direct image messages (automatic conversion)"""
+    user_id = message.from_user.id
+    
+    # Check rate limit (same limiter as /pdf command)
+    is_allowed, wait_seconds = pdf_rate_limiter.check_rate_limit(user_id)
+    if not is_allowed:
+        await message.reply_text(
+            f"⏱️ **Rate limit exceeded!**\n\n"
+            f"Please wait {wait_seconds} seconds before sending more images.\n"
+            f"Tip: Use /pdf command to convert images manually."
+        )
+        return
+    
     await convert_image_to_pdf(client, message, message)

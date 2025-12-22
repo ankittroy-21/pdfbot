@@ -102,18 +102,31 @@ async def collect_image_handler(client: Client, message: Message):
     # Check if user has an active session
     session_id = await storage.get_user_session(user_id)
     if not session_id:
-        # Silently ignore photos sent without starting /multipdf
+        # Silently ignore photos/documents sent without starting /multipdf
         # Users can still use /pdf to convert single images or /compress for PDFs
         return
-    
-    # Get the photo
-    photo = message.photo
-    # Get the file_id of the largest photo size (last in the list is largest)
-    file_id = photo.file_id
-    
-    # Download the photo
-    downloaded_result = await client.download_media(file_id, file_name=f"temp_{file_id}.jpg")
-    
+
+    downloaded_result = None
+
+    # Handle photo messages
+    if message.photo:
+        # Get the photo
+        photo = message.photo
+        # Get the file_id of the largest photo size (last in the list is largest)
+        file_id = photo.file_id
+        
+        # Download the photo
+        downloaded_result = await client.download_media(file_id, file_name=f"temp_{file_id}.jpg")
+    # Handle document messages that are valid images
+    elif message.document:
+        from .image_file_handler import is_valid_image_file
+        if await is_valid_image_file(message):
+            document = message.document
+            file_id = document.file_id
+            original_name = document.file_name or f"image_{file_id}"
+            # Download the document with its original extension for proper processing
+            downloaded_result = await client.download_media(file_id, file_name=f"temp_{file_id}_{original_name}")
+
     if downloaded_result and isinstance(downloaded_result, str):
         # Get current image count before adding
         current_images = await storage.get_session_images(session_id)
@@ -167,9 +180,10 @@ async def collect_image_handler(client: Client, message: Message):
                     reply_markup=keyboard
                 )
                 _progress_messages[user_id] = new_progress
-    else:
-        # Show error message
-        await message.reply_text("❌ Failed to download the image.")
+    elif message.document:
+        # If it's a document but not a valid image, just ignore it silently
+        # Don't show an error message for non-image documents
+        pass
 
 async def done_command_handler(client: Client, message: Message):
     """Show A4/Auto-Size buttons after user has collected images"""
